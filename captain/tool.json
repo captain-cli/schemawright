@@ -1,0 +1,71 @@
+{
+  "schemaVersion": "1.0",
+  "name": "schemawright",
+  "displayName": "Schemawright",
+  "version": "0.1.1",
+  "category": "database",
+  "description": "Project-agnostic SQL migration lifecycle tool.",
+  "runtime": {
+    "type": "python",
+    "requires": ">=3.10",
+    "install": "pip install -e ."
+  },
+  "binary": "schemawright",
+  "commands": [
+    {
+      "name": "init",
+      "exec": "schemawright init"
+    },
+    {
+      "name": "init-set",
+      "exec": "schemawright init-set"
+    },
+    {
+      "name": "register",
+      "exec": "schemawright register"
+    },
+    {
+      "name": "validate",
+      "exec": "schemawright validate"
+    },
+    {
+      "name": "promote",
+      "exec": "schemawright promote"
+    },
+    {
+      "name": "migrate",
+      "exec": "schemawright migrate"
+    },
+    {
+      "name": "status",
+      "exec": "schemawright status"
+    },
+    {
+      "name": "rollback",
+      "exec": "schemawright rollback"
+    }
+  ],
+  "capabilities": [
+    "sql.schema.init",
+    "sql.schema.register",
+    "sql.schema.validate",
+    "sql.schema.trigger.promote",
+    "sql.schema.procedure.promote",
+    "sql.schema.trigger.register",
+    "sql.schema.procedure.register",
+    "sql.schema.init-set",
+    "sql.schema.promote",
+    "sql.schema.migrate",
+    "sql.schema.seed",
+    "sql.schema.status",
+    "sql.schema.rollback.plan",
+    "sql.sqlite.support",
+    "sql.mysql.support",
+    "sql.mariadb.support",
+    "sql.postgres.support",
+    "sql.cockroachdb.support",
+    "sql.sqlserver.support",
+    "sql.oracle.support",
+    "sql.duckdb.support"
+  ]
+}

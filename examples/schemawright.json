@@ -1,0 +1,38 @@
+{
+  "projectName": "schemawright-example",
+  "defaults": {
+    "orderStep": 10,
+    "stageByDefault": true
+  },
+  "databases": {
+    "app": {
+      "driver": "sqlite",
+      "database": "runtime/app.sqlite",
+      "migrations": {
+        "staged": "sql/migrations/staged/app",
+        "active": "sql/migrations/active/app",
+        "archive": "sql/migrations/archive/app"
+      },
+      "seeds": {
+        "staged": "sql/seeds/staged/app",
+        "active": "sql/seeds/active/app",
+        "archive": "sql/seeds/archive/app"
+      },
+      "rollbacks": {
+        "staged": "sql/rollbacks/staged/app",
+        "active": "sql/rollbacks/active/app",
+        "archive": "sql/rollbacks/archive/app"
+      },
+      "procedures": {
+        "staged": "sql/procedures/staged/app",
+        "active": "sql/procedures/active/app",
+        "archive": "sql/procedures/archive/app"
+      },
+      "triggers": {
+        "staged": "sql/triggers/staged/app",
+        "active": "sql/triggers/active/app",
+        "archive": "sql/triggers/archive/app"
+      }
+    }
+  }
+}
