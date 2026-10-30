@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 import sys
 from . import __version__
@@ -9,6 +10,7 @@ from .files import ensure_dirs, next_version_and_order, register_file, promote_v
 from .model import normalize_type
 from .runner import MigrationRunner, RunOptions
 from .validate import validate_database
+from .configwright_bridge import inspect_databases
 
 
 def parse_version(value: str | None) -> int | None:
@@ -78,6 +80,8 @@ def build_parser() -> argparse.ArgumentParser:
     prom.add_argument("--skip-triggers", action="store_true", help="Do not promote trigger files.")
     prom.add_argument("--dry-run", action="store_true", help="Preview promotion without copying files.")
 
+    check = sub.add_parser("configwright-check", help="Inspect ConfigWright databases.json without connecting to databases.")
+    check.add_argument("--source", required=True, help="Path to ConfigWright schemawright/databases.json")
     sub.add_parser("validate", help="Validate migration file naming and duplicate keys.")
     sub.add_parser("status", help="Show applied/pending active migrations.")
     mig = sub.add_parser("migrate", help="Apply active migrations and seeds.")
@@ -101,6 +105,17 @@ def main(argv: list[str] | None = None) -> int:
     if command == "init":
         write_starter_config(config_path, force=args.force)
         print(f"Created: {config_path}")
+        return 0
+
+    if command == "configwright-check":
+        try:
+            databases = inspect_databases(args.source)
+        except (ValueError, OSError, json.JSONDecodeError) as exc:
+            print(f"ConfigWright database contract rejected: {exc}", file=sys.stderr)
+            return 1
+        for db in databases:
+            print(f"{db['name']}: {db['driver']} target={db['target']} refs={','.join(sorted(db['credentialRefs'])) or 'none'}")
+        print(f"Validated {len(databases)} database definition(s); no databases contacted.")
         return 0
 
     config = load_config(config_path, root=args.root, canonical=args.canonical)
