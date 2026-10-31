@@ -13,6 +13,7 @@ from .validate import validate_database
 from .configwright_bridge import inspect_databases
 from .configwright_import import import_configwright
 from .configwright_plan import plan_database
+from .configwright_credentials import resolve_database_credentials, CredentialResolutionError
 
 
 def parse_version(value: str | None) -> int | None:
@@ -92,6 +93,11 @@ def build_parser() -> argparse.ArgumentParser:
     planning.add_argument("--source", required=True, help="ConfigWright schemawright/databases.json")
     planning.add_argument("--project-root", required=True, help="Root for migration file paths")
     planning.add_argument("--database", default=None, help="Select one database by identifier")
+    credentials = sub.add_parser("configwright-credentials-check", help="Verify required managed credentials without printing values or connecting to databases.")
+    credentials.add_argument("--source", required=True, help="ConfigWright schemawright/databases.json")
+    credentials.add_argument("--project-root", required=True, help="Root for project paths")
+    credentials.add_argument("--database", default=None, help="Select one database by identifier")
+    credentials.add_argument("--secrets-file", required=True, help="CredentialWright-managed env file (never pass secret values)")
     sub.add_parser("validate", help="Validate migration file naming and duplicate keys.")
     sub.add_parser("status", help="Show applied/pending active migrations.")
     mig = sub.add_parser("migrate", help="Apply active migrations and seeds.")
@@ -155,6 +161,19 @@ def main(argv: list[str] | None = None) -> int:
             return 1 if has_errors else 0
         except (ValueError, OSError, json.JSONDecodeError) as exc:
             print(f"ConfigWright migration plan rejected: {exc}", file=sys.stderr)
+            return 1
+
+    if command == "configwright-credentials-check":
+        try:
+            imported_config = import_configwright(args.source, root=args.project_root, database=args.database)
+            for db in imported_config.databases.values():
+                resolved = resolve_database_credentials(db, args.secrets_file)
+                print(f"{db.name}: {len(resolved)} credential reference(s) resolved (values hidden)")
+            print("Credential verification complete; no databases contacted.")
+            return 0
+        except (CredentialResolutionError, ValueError, OSError, json.JSONDecodeError):
+            # Do not include exception text from outside the guarded resolver.
+            print("Credential verification failed; check database references and managed secret keys.", file=sys.stderr)
             return 1
 
     config = load_config(config_path, root=args.root, canonical=args.canonical)
