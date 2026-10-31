@@ -11,6 +11,7 @@ from .model import normalize_type
 from .runner import MigrationRunner, RunOptions
 from .validate import validate_database
 from .configwright_bridge import inspect_databases
+from .configwright_import import import_configwright
 
 
 def parse_version(value: str | None) -> int | None:
@@ -82,6 +83,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     check = sub.add_parser("configwright-check", help="Inspect ConfigWright databases.json without connecting to databases.")
     check.add_argument("--source", required=True, help="Path to ConfigWright schemawright/databases.json")
+    imported = sub.add_parser("configwright-import", help="Read-only import into SchemaWright lifecycle model.")
+    imported.add_argument("--source", required=True, help="ConfigWright schemawright/databases.json")
+    imported.add_argument("--project-root", required=True, help="Root for migration file paths")
+    imported.add_argument("--database", default=None, help="Select one database by identifier")
     sub.add_parser("validate", help="Validate migration file naming and duplicate keys.")
     sub.add_parser("status", help="Show applied/pending active migrations.")
     mig = sub.add_parser("migrate", help="Apply active migrations and seeds.")
@@ -116,6 +121,18 @@ def main(argv: list[str] | None = None) -> int:
         for db in databases:
             print(f"{db['name']}: {db['driver']} target={db['target']} refs={','.join(sorted(db['credentialRefs'])) or 'none'}")
         print(f"Validated {len(databases)} database definition(s); no databases contacted.")
+        return 0
+
+    if command == "configwright-import":
+        try:
+            imported_config = import_configwright(args.source, root=args.project_root, database=args.database)
+        except (ValueError, OSError, json.JSONDecodeError) as exc:
+            print(f"ConfigWright database import rejected: {exc}", file=sys.stderr)
+            return 1
+        for db in imported_config.databases.values():
+            refs = sorted(key for key in db.settings if key.endswith("Ref"))
+            print(f"{db.name}: {db.driver} migrations={db.migrations.active} refs={','.join(refs) or 'none'}")
+        print(f"Imported {len(imported_config.databases)} database definition(s) into SchemaWright model; no databases contacted.")
         return 0
 
     config = load_config(config_path, root=args.root, canonical=args.canonical)
