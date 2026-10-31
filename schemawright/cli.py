@@ -14,6 +14,7 @@ from .configwright_bridge import inspect_databases
 from .configwright_import import import_configwright
 from .configwright_plan import plan_database
 from .configwright_credentials import resolve_database_credentials, CredentialResolutionError
+from .owner_provision import plan_owner_provision, OwnerProvisionError
 
 
 def parse_version(value: str | None) -> int | None:
@@ -98,6 +99,15 @@ def build_parser() -> argparse.ArgumentParser:
     credentials.add_argument("--project-root", required=True, help="Root for project paths")
     credentials.add_argument("--database", default=None, help="Select one database by identifier")
     credentials.add_argument("--secrets-file", required=True, help="CredentialWright-managed env file (never pass secret values)")
+    owner = sub.add_parser("configwright-owner-plan", help="Offline, non-executable plan for an owner-controlled database installation.")
+    owner.add_argument("--source", required=True, help="Generated ConfigWright databases.json")
+    owner.add_argument("--project-root", required=True)
+    owner.add_argument("--database", required=True, help="Select one database")
+    mode = owner.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--existing-database", action="store_true", help="Adopt an existing database without replacing it")
+    mode.add_argument("--new-database", action="store_true", help="Plan creation of a new database")
+    owner.add_argument("--application-user", required=True, help="Dedicated least-privileged account identifier (not a password)")
+    owner.add_argument("--existing-user", action="store_true", help="Plan reuse of an existing application account")
     sub.add_parser("validate", help="Validate migration file naming and duplicate keys.")
     sub.add_parser("status", help="Show applied/pending active migrations.")
     mig = sub.add_parser("migrate", help="Apply active migrations and seeds.")
@@ -174,6 +184,28 @@ def main(argv: list[str] | None = None) -> int:
         except (CredentialResolutionError, ValueError, OSError, json.JSONDecodeError):
             # Do not include exception text from outside the guarded resolver.
             print("Credential verification failed; check database references and managed secret keys.", file=sys.stderr)
+            return 1
+
+    if command == "configwright-owner-plan":
+        try:
+            imported = import_configwright(args.source, root=args.project_root, database=args.database)
+            db = imported.databases[args.database]
+            plan = plan_owner_provision(db, existing_database=args.existing_database,
+                                        application_user=args.application_user, existing_user=args.existing_user)
+            print(json.dumps({
+                "database": plan.database_id,
+                "driver": plan.driver,
+                "databaseAction": "preserve-existing" if plan.target_exists else "create-after-approval",
+                "account": plan.application_user,
+                "accountAction": "reuse-after-verification" if not plan.create_application_user else "create-after-approval",
+                "privileges": list(plan.grants),
+                "adminAuthorization": "temporary-interactive-at-execution",
+                "approved": False, "executed": False,
+            }, indent=2))
+            print("Offline owner provisioning plan only; no credentials requested and no databases contacted.")
+            return 0
+        except (OwnerProvisionError, ValueError, OSError, KeyError, json.JSONDecodeError):
+            print("Owner provisioning plan rejected; verify selected database, driver, and account inputs.", file=sys.stderr)
             return 1
 
     config = load_config(config_path, root=args.root, canonical=args.canonical)
