@@ -12,6 +12,7 @@ from .runner import MigrationRunner, RunOptions
 from .validate import validate_database
 from .configwright_bridge import inspect_databases
 from .configwright_import import import_configwright
+from .configwright_plan import plan_database
 
 
 def parse_version(value: str | None) -> int | None:
@@ -87,6 +88,10 @@ def build_parser() -> argparse.ArgumentParser:
     imported.add_argument("--source", required=True, help="ConfigWright schemawright/databases.json")
     imported.add_argument("--project-root", required=True, help="Root for migration file paths")
     imported.add_argument("--database", default=None, help="Select one database by identifier")
+    planning = sub.add_parser("configwright-plan", help="Offline migration discovery and ordering; no database connections.")
+    planning.add_argument("--source", required=True, help="ConfigWright schemawright/databases.json")
+    planning.add_argument("--project-root", required=True, help="Root for migration file paths")
+    planning.add_argument("--database", default=None, help="Select one database by identifier")
     sub.add_parser("validate", help="Validate migration file naming and duplicate keys.")
     sub.add_parser("status", help="Show applied/pending active migrations.")
     mig = sub.add_parser("migrate", help="Apply active migrations and seeds.")
@@ -134,6 +139,23 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{db.name}: {db.driver} migrations={db.migrations.active} refs={','.join(refs) or 'none'}")
         print(f"Imported {len(imported_config.databases)} database definition(s) into SchemaWright model; no databases contacted.")
         return 0
+
+    if command == "configwright-plan":
+        try:
+            imported_config = import_configwright(args.source, root=args.project_root, database=args.database)
+            has_errors = False
+            for db in imported_config.databases.values():
+                entries, issues = plan_database(db)
+                print(f"{db.name}: {len(entries)} SQL file(s) discovered (offline; applied state unknown)")
+                for entry in entries:
+                    print(f"  {entry['stage']:<6} {entry['kind']:<9} V{entry['version']:04d} order={entry['order']:04d} {entry['file']}")
+                for issue in issues:
+                    print(f"{db.name}: ERROR: {issue}", file=sys.stderr)
+                has_errors = has_errors or bool(issues)
+            return 1 if has_errors else 0
+        except (ValueError, OSError, json.JSONDecodeError) as exc:
+            print(f"ConfigWright migration plan rejected: {exc}", file=sys.stderr)
+            return 1
 
     config = load_config(config_path, root=args.root, canonical=args.canonical)
     dbs = selected_databases(config, args.database)
