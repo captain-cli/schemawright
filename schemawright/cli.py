@@ -15,6 +15,8 @@ from .configwright_import import import_configwright
 from .configwright_plan import plan_database
 from .configwright_credentials import resolve_database_credentials, CredentialResolutionError
 from .owner_provision import plan_owner_provision, OwnerProvisionError
+from .owner_inspect import inspect_owner_database, OwnerInspectError
+import getpass
 
 
 def parse_version(value: str | None) -> int | None:
@@ -108,6 +110,11 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--new-database", action="store_true", help="Plan creation of a new database")
     owner.add_argument("--application-user", required=True, help="Dedicated least-privileged account identifier (not a password)")
     owner.add_argument("--existing-user", action="store_true", help="Plan reuse of an existing application account")
+    inspection = sub.add_parser("configwright-owner-inspect", help="Inspect an existing MySQL/MariaDB server; no changes.")
+    inspection.add_argument("--source", required=True, help="Generated ConfigWright databases.json")
+    inspection.add_argument("--project-root", required=True)
+    inspection.add_argument("--database", required=True, help="Select a single database")
+    inspection.add_argument("--login-user", required=True, help="Database account used for inspection (not password)")
     sub.add_parser("validate", help="Validate migration file naming and duplicate keys.")
     sub.add_parser("status", help="Show applied/pending active migrations.")
     mig = sub.add_parser("migrate", help="Apply active migrations and seeds.")
@@ -206,6 +213,27 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         except (OwnerProvisionError, ValueError, OSError, KeyError, json.JSONDecodeError):
             print("Owner provisioning plan rejected; verify selected database, driver, and account inputs.", file=sys.stderr)
+            return 1
+
+    if command == "configwright-owner-inspect":
+        try:
+            imported = import_configwright(args.source, root=args.project_root, database=args.database)
+            db = imported.databases[args.database]
+            # No --password flag, environment fallback, or other noninteractive path.
+            password = getpass.getpass("Database password (hidden): ")
+            result = inspect_owner_database(db, username=args.login_user, password=password)
+            print(json.dumps({
+                "database": result.database_id,
+                "engineVersion": result.engine_version,
+                "databaseExists": result.database_exists,
+                "grantsVisible": result.grants_visible,
+                "encryptedTransport": result.encrypted_transport,
+                "readOnlyInspection": True,
+                "changesExecuted": False,
+            }, indent=2))
+            return 0
+        except (OwnerInspectError, ValueError, KeyError, OSError, json.JSONDecodeError, EOFError, KeyboardInterrupt):
+            print("Owner inspection failed or cancelled; no provisioning performed.", file=sys.stderr)
             return 1
 
     config = load_config(config_path, root=args.root, canonical=args.canonical)
