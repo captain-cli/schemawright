@@ -16,6 +16,7 @@ from .configwright_plan import plan_database
 from .configwright_credentials import resolve_database_credentials, CredentialResolutionError
 from .owner_provision import plan_owner_provision, OwnerProvisionError
 from .owner_inspect import inspect_owner_database, OwnerInspectError
+from .owner_preflight import preflight_owner_provision, OwnerPreflightError
 import getpass
 
 
@@ -115,6 +116,16 @@ def build_parser() -> argparse.ArgumentParser:
     inspection.add_argument("--project-root", required=True)
     inspection.add_argument("--database", required=True, help="Select a single database")
     inspection.add_argument("--login-user", required=True, help="Database account used for inspection (not password)")
+    preflight = sub.add_parser("configwright-owner-preflight", help="Inspect actual database existence against an owner installation plan; no writes.")
+    preflight.add_argument("--source", required=True)
+    preflight.add_argument("--project-root", required=True)
+    preflight.add_argument("--database", required=True)
+    preflight.add_argument("--login-user", required=True, help="Inspection account, not a password")
+    preflight_mode = preflight.add_mutually_exclusive_group(required=True)
+    preflight_mode.add_argument("--existing-database", action="store_true")
+    preflight_mode.add_argument("--new-database", action="store_true")
+    preflight.add_argument("--application-user", required=True)
+    preflight.add_argument("--existing-user", action="store_true")
     sub.add_parser("validate", help="Validate migration file naming and duplicate keys.")
     sub.add_parser("status", help="Show applied/pending active migrations.")
     mig = sub.add_parser("migrate", help="Apply active migrations and seeds.")
@@ -234,6 +245,34 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         except (OwnerInspectError, ValueError, KeyError, OSError, json.JSONDecodeError, EOFError, KeyboardInterrupt):
             print("Owner inspection failed or cancelled; no provisioning performed.", file=sys.stderr)
+            return 1
+
+    if command == "configwright-owner-preflight":
+        try:
+            imported = import_configwright(args.source, root=args.project_root, database=args.database)
+            db = imported.databases[args.database]
+            password = getpass.getpass("Inspection password (hidden): ")
+            result = preflight_owner_provision(
+                db, username=args.login_user, password=password,
+                existing_database=args.existing_database,
+                application_user=args.application_user, existing_user=args.existing_user)
+            print(json.dumps({
+                "database": result.database_id,
+                "engineVersion": result.engine_version,
+                "databaseExists": result.database_exists,
+                "databaseAction": result.database_action,
+                "account": result.application_user,
+                "accountAction": result.account_action,
+                "accountExistenceVerified": False,
+                "privilegesRequested": list(result.grants_requested),
+                "requiresOwnerApproval": True,
+                "authorized": False,
+                "executed": False,
+            }, indent=2))
+            print("Preflight complete; no accounts created, grants changed, or migrations run.")
+            return 0
+        except (OwnerPreflightError, ValueError, KeyError, OSError, json.JSONDecodeError, EOFError, KeyboardInterrupt):
+            print("Owner provisioning preflight failed or cancelled; no action performed.", file=sys.stderr)
             return 1
 
     config = load_config(config_path, root=args.root, canonical=args.canonical)
