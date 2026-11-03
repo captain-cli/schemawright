@@ -17,6 +17,7 @@ from .configwright_credentials import resolve_database_credentials, CredentialRe
 from .owner_provision import plan_owner_provision, OwnerProvisionError
 from .owner_inspect import inspect_owner_database, OwnerInspectError
 from .owner_preflight import preflight_owner_provision, OwnerPreflightError
+from .owner_apply import apply_owner_account, OwnerApplyError
 import getpass
 
 
@@ -126,6 +127,15 @@ def build_parser() -> argparse.ArgumentParser:
     preflight_mode.add_argument("--new-database", action="store_true")
     preflight.add_argument("--application-user", required=True)
     preflight.add_argument("--existing-user", action="store_true")
+    apply = sub.add_parser("configwright-owner-apply", help="Explicitly approved MySQL-only new application account provisioning for an existing database.")
+    apply.add_argument("--source", required=True)
+    apply.add_argument("--project-root", required=True)
+    apply.add_argument("--database", required=True)
+    apply.add_argument("--login-user", required=True, help="Temporary admin username; password prompted and never saved")
+    apply.add_argument("--application-user", required=True, help="New application account name")
+    apply.add_argument("--secrets-output", required=True, help="New exclusive mode-0600 secret file path; must not exist")
+    apply.add_argument("--account-host", default="127.0.0.1", choices=["127.0.0.1", "localhost", "::1"])
+    apply.add_argument("--apply", action="store_true", help="Enable the owner-confirmation workflow; otherwise this command refuses writes")
     sub.add_parser("validate", help="Validate migration file naming and duplicate keys.")
     sub.add_parser("status", help="Show applied/pending active migrations.")
     mig = sub.add_parser("migrate", help="Apply active migrations and seeds.")
@@ -273,6 +283,33 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         except (OwnerPreflightError, ValueError, KeyError, OSError, json.JSONDecodeError, EOFError, KeyboardInterrupt):
             print("Owner provisioning preflight failed or cancelled; no action performed.", file=sys.stderr)
+            return 1
+
+    if command == "configwright-owner-apply":
+        if not args.apply:
+            print("Owner provisioning requires --apply and interactive approval; no changes executed.", file=sys.stderr)
+            return 1
+        try:
+            imported = import_configwright(args.source, root=args.project_root, database=args.database)
+            db = imported.databases[args.database]
+            print(f"Review: create new account {args.application_user}@{args.account_host} with SELECT, INSERT, UPDATE, DELETE on existing database {db.settings.get('database')} only.")
+            print("Existing databases and accounts will not be altered. A new private secrets file will be created.")
+            confirmation = input(f"Type PROVISION {args.database} to authorize: ")
+            if confirmation != f"PROVISION {args.database}":
+                print("Approval declined; no changes executed.")
+                return 1
+            password = getpass.getpass("Temporary database administrator password (hidden): ")
+            result = apply_owner_account(
+                db, admin_user=args.login_user, admin_password=password,
+                application_user=args.application_user, secret_file=args.secrets_output,
+                account_host=args.account_host, approved=True)
+            print(json.dumps({"database":result.database_id, "account":result.account,
+                              "accountHost":result.account_host, "accountCreated":result.account_created,
+                              "grantsApplied":result.grants_applied, "credentialFile":result.secret_file,
+                              "administratorCredentialStored":False}, indent=2))
+            return 0
+        except (OwnerApplyError, ValueError, KeyError, OSError, EOFError, KeyboardInterrupt):
+            print("Owner provisioning stopped; inspect the database account state and private credential file before retrying. No automatic rollback was attempted.", file=sys.stderr)
             return 1
 
     config = load_config(config_path, root=args.root, canonical=args.canonical)
