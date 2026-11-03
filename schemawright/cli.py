@@ -19,6 +19,7 @@ from .owner_inspect import inspect_owner_database, OwnerInspectError
 from .owner_preflight import preflight_owner_provision, OwnerPreflightError
 from .owner_apply import apply_owner_account, OwnerApplyError
 import getpass
+from .configwright_live_status import migration_status, LiveStatusError
 
 
 def parse_version(value: str | None) -> int | None:
@@ -103,6 +104,12 @@ def build_parser() -> argparse.ArgumentParser:
     credentials.add_argument("--project-root", required=True, help="Root for project paths")
     credentials.add_argument("--database", default=None, help="Select one database by identifier")
     credentials.add_argument("--secrets-file", required=True, help="CredentialWright-managed env file (never pass secret values)")
+    live = sub.add_parser("configwright-live-status", help="Inspect existing MySQL migration history without writes.")
+    live.add_argument("--source", required=True)
+    live.add_argument("--project-root", required=True)
+    live.add_argument("--database", required=True)
+    live.add_argument("--login-user", required=True)
+    live.add_argument("--secrets-file", help="Private CredentialWright env file if using a passwordRef")
     owner = sub.add_parser("configwright-owner-plan", help="Offline, non-executable plan for an owner-controlled database installation.")
     owner.add_argument("--source", required=True, help="Generated ConfigWright databases.json")
     owner.add_argument("--project-root", required=True)
@@ -212,6 +219,25 @@ def main(argv: list[str] | None = None) -> int:
         except (CredentialResolutionError, ValueError, OSError, json.JSONDecodeError):
             # Do not include exception text from outside the guarded resolver.
             print("Credential verification failed; check database references and managed secret keys.", file=sys.stderr)
+            return 1
+
+    if command == "configwright-live-status":
+        try:
+            imported = import_configwright(args.source, root=args.project_root, database=args.database)
+            db = imported.databases[args.database]
+            if args.secrets_file:
+                refs = resolve_database_credentials(db, args.secrets_file)
+                password = refs.get('passwordRef')
+                if not password:
+                    raise LiveStatusError('Missing passwordRef in selected database definition')
+            else:
+                password = getpass.getpass('Read-only inspection password (hidden): ')
+            result = migration_status(db, username=args.login_user, password=password)
+            print(json.dumps(result, indent=2))
+            return 2 if not result['safeToPlan'] else 0
+        except (LiveStatusError, CredentialResolutionError, ValueError, KeyError, OSError,
+                json.JSONDecodeError, EOFError, KeyboardInterrupt):
+            print('Live migration inspection failed; verify configuration, history access and credentials.', file=sys.stderr)
             return 1
 
     if command == "configwright-owner-plan":
