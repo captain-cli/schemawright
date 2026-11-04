@@ -20,9 +20,50 @@ from .owner_inspect import _local_host
 
 class MigrationBatchError(ValueError):
     """Safe failure; completed items denote verified history inserts only."""
-    def __init__(self, message: str, completed: list[str] | None = None):
+    def __init__(self, message: str, completed: list[str] | None = None, *,
+                 error_code: str = 'preflight_refused', stage: str = 'preflight',
+                 changes_executed: bool | None = False,
+                 manual_inspection_required: bool = False):
         super().__init__(message)
         self.completed = list(completed or [])
+        self.error_code = error_code
+        self.stage = stage
+        self.changes_executed = changes_executed
+        self.manual_inspection_required = manual_inspection_required
+
+    def as_result(self) -> dict[str, Any]:
+        return {'action': 'stopped', 'errorCode': self.error_code,
+                'stage': self.stage, 'completed': self.completed,
+                'changesExecuted': self.changes_executed,
+                'manualInspectionRequired': self.manual_inspection_required,
+                'error': str(self)}
+
+
+def _driver_error_code(exc: Exception, stage: str) -> str:
+    """Classify MySQL error numbers without copying driver messages or credentials."""
+    number = exc.args[0] if getattr(exc, 'args', ()) else None
+    if isinstance(number, int):
+        if number in (1045, 1698):
+            return 'authentication_failed'
+        if number in (2002, 2003, 2005, 2006, 2013):
+            return 'connection_failed'
+        if number in (1044, 1142, 1143, 1227):
+            return 'permission_denied'
+        if number in (1205, 1213):
+            return 'lock_unavailable'
+    if stage == 'connect':
+        return 'connection_failed'
+    return 'database_operation_failed'
+
+
+def _guard_error_code(message: str) -> str:
+    if 'lock' in message.lower():
+        return 'lock_unavailable'
+    if 'history' in message.lower() and 'ordering' not in message.lower():
+        return 'history_invalid'
+    if any(x in message.lower() for x in ('drift', 'target table', 'ordering gap', 'schema object')):
+        return 'schema_drift'
+    return 'preflight_refused' 
 
 
 def migrate_batch(db: DatabaseConfig, *, username: str, password: str,
@@ -86,12 +127,14 @@ def migrate_batch(db: DatabaseConfig, *, username: str, password: str,
     conn = None
     locked = False
     ddl_attempted = False
+    stage = 'connect'
     completed: list[str] = []
     lock_name = 'schemawright:migrate:' + hashlib.sha256(schema.encode()).hexdigest()[:32]
     try:
         conn = connect(host=host, port=port, user=username, password=password,
                        database=schema, connect_timeout=5, read_timeout=5,
                        write_timeout=5, autocommit=True, charset='utf8mb4')
+        stage = 'lock'
         with conn.cursor() as cur:
             # Lock applies even to preflight, so preview and apply inspect a stable
             # state with respect to other SchemaWright writers.
@@ -99,6 +142,7 @@ def migrate_batch(db: DatabaseConfig, *, username: str, password: str,
             if cur.fetchone() != (1,):
                 raise MigrationBatchError('Cannot acquire SchemaWright migration lock')
             locked = True
+            stage = 'schema_inspection'
             cur.execute('SELECT TABLE_NAME,TABLE_TYPE FROM information_schema.TABLES '
                         'WHERE TABLE_SCHEMA=%s', (schema,))
             present_rows = cur.fetchall()
@@ -110,6 +154,7 @@ def migrate_batch(db: DatabaseConfig, *, username: str, password: str,
                 present[lname] = kind
             if present.get('schema_migrations') != 'BASE TABLE':
                 raise MigrationBatchError('Migration history table is missing or invalid')
+            stage = 'history_read'
             cur.execute('SELECT type,version,install_order,filename,checksum,success '
                         'FROM `schema_migrations`')
             history = {}
@@ -123,6 +168,7 @@ def migrate_batch(db: DatabaseConfig, *, username: str, password: str,
                 f = local.get(key)
                 if f is None or success != 1 or name != f[1].name or digest != f[3]:
                     raise MigrationBatchError('Unknown, failed, or drifted migration history')
+            stage = 'preflight'
             pending = []
             found_pending = False
             for f in files:
@@ -153,10 +199,12 @@ def migrate_batch(db: DatabaseConfig, *, username: str, password: str,
                 if cur.fetchone() != (0,):
                     raise MigrationBatchError('Table appeared during batch; manual inspection required', completed)
                 ddl_attempted = True
+                stage = 'ddl'
                 start = time.monotonic()
                 cur.execute(sql)
                 elapsed = int((time.monotonic() - start) * 1000)
                 # DDL committed. If the history insert fails, do NOT retry.
+                stage = 'history_write'
                 cur.execute('INSERT INTO `schema_migrations` '
                             '(type,version,install_order,description,filename,checksum,execution_ms,success) '
                             'VALUES (%s,%s,%s,%s,%s,%s,%s,1)',
@@ -164,16 +212,29 @@ def migrate_batch(db: DatabaseConfig, *, username: str, password: str,
                              p.name, digest, elapsed))
                 completed.append(p.name)
                 ddl_attempted = False
+                stage = 'preflight'
             return {**base, 'action': 'applied', 'completed': completed,
                     'remaining': len(pending) - len(selected), 'changesExecuted': True}
     except MigrationBatchError as exc:
-        if completed and not exc.completed:
-            raise MigrationBatchError(str(exc), completed) from None
+        # Explicit guards are deterministic. Earlier completed migrations remain committed.
+        if not exc.completed:
+            exc.completed = list(completed)
+        if exc.error_code == 'preflight_refused':
+            exc.error_code = _guard_error_code(str(exc))
+        exc.stage = stage
+        exc.changes_executed = True if completed else None if ddl_attempted else False
+        exc.manual_inspection_required = bool(ddl_attempted or completed or
+            exc.error_code in ('history_invalid', 'schema_drift'))
         raise
-    except Exception:
+    except Exception as exc:
+        uncertain = ddl_attempted
+        code = 'execution_uncertain' if uncertain else _driver_error_code(exc, stage)
         detail = ('DDL or history write may have committed; manual recovery inspection required'
-                  if ddl_attempted else 'Batch preflight or execution failed; inspect state before retrying')
-        raise MigrationBatchError(detail, completed) from None
+                  if uncertain else 'Batch database operation failed; check errorCode and stage')
+        raise MigrationBatchError(detail, completed, error_code=code,
+                                  stage=stage,
+                                  changes_executed=True if completed else None if uncertain else False,
+                                  manual_inspection_required=bool(uncertain or completed)) from None
     finally:
         if conn is not None:
             if locked:

@@ -335,8 +335,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(result, indent=2))
             return 0
         except MigrationBatchError as exc:
-            print(json.dumps({'action': 'stopped', 'completed': exc.completed,
-                              'error': str(exc), 'manualInspectionRequired': True}, indent=2), file=sys.stderr)
+            print(json.dumps(exc.as_result(), indent=2), file=sys.stderr)
             return 2
         except (ValueError, KeyError, OSError, json.JSONDecodeError, EOFError, KeyboardInterrupt):
             print('Batch refused; verify configuration and database state before retrying.', file=sys.stderr)
