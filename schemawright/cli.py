@@ -23,6 +23,7 @@ from .recovery_reconcile import reconcile_one, ReconcileError
 from .configwright_live_status import migration_status, LiveStatusError
 from .history_init import initialize_history, HistoryInitError
 from .migration_apply import migrate_one, MigrationApplyError
+from .migration_batch import migrate_batch, MigrationBatchError
 from .recovery_inspect import inspect_recovery, RecoveryInspectError
 
 
@@ -132,6 +133,13 @@ def build_parser() -> argparse.ArgumentParser:
     migrate_one_cmd.add_argument("--database", required=True)
     migrate_one_cmd.add_argument("--login-user", required=True, help="Dedicated migrator account")
     migrate_one_cmd.add_argument("--apply", action="store_true", help="Require typed approval before one migration")
+    batch_cmd = sub.add_parser("configwright-migrate-batch", help="Plan or apply a bounded, ordered CREATE TABLE migration batch (Phase 6D.1).")
+    batch_cmd.add_argument("--source", required=True)
+    batch_cmd.add_argument("--project-root", required=True)
+    batch_cmd.add_argument("--database", required=True)
+    batch_cmd.add_argument("--login-user", required=True, help="Dedicated migrator account")
+    batch_cmd.add_argument("--max-migrations", type=int, default=10, help="Maximum migrations in this batch (1-25)")
+    batch_cmd.add_argument("--apply", action="store_true", help="Require exact typed approval to execute the selected batch")
     owner = sub.add_parser("configwright-owner-plan", help="Offline, non-executable plan for an owner-controlled database installation.")
     owner.add_argument("--source", required=True, help="Generated ConfigWright databases.json")
     owner.add_argument("--project-root", required=True)
@@ -307,6 +315,31 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         except (HistoryInitError, ValueError, KeyError, OSError, json.JSONDecodeError, EOFError, KeyboardInterrupt):
             print("History initialization refused or failed; inspect target state and migrator authorization. No automatic rollback.",file=sys.stderr)
+            return 1
+
+    if command == "configwright-migrate-batch":
+        try:
+            imported = import_configwright(args.source, root=args.project_root, database=args.database)
+            db = imported.databases[args.database]
+            if args.apply:
+                print(f"Review: execute up to {args.max_migrations} pending CREATE TABLE migrations in {db.settings.get('database')} using {args.login_user}.")
+                print("MySQL DDL auto-commits. Batch stops at first failure; no rollback or automatic retry.")
+                expected = f"BATCH {args.database} {args.max_migrations}"
+                if input(f'Type "{expected}" to authorize: ') != expected:
+                    print('Authorization declined; no changes executed.', file=sys.stderr)
+                    return 1
+            password = getpass.getpass('Migrator password (hidden): ')
+            result = migrate_batch(db, username=args.login_user, password=password,
+                                   approved=args.apply, dry_run=not args.apply,
+                                   max_migrations=args.max_migrations)
+            print(json.dumps(result, indent=2))
+            return 0
+        except MigrationBatchError as exc:
+            print(json.dumps({'action': 'stopped', 'completed': exc.completed,
+                              'error': str(exc), 'manualInspectionRequired': True}, indent=2), file=sys.stderr)
+            return 2
+        except (ValueError, KeyError, OSError, json.JSONDecodeError, EOFError, KeyboardInterrupt):
+            print('Batch refused; verify configuration and database state before retrying.', file=sys.stderr)
             return 1
 
     if command == "configwright-migrate-one":
