@@ -20,6 +20,7 @@ from .owner_preflight import preflight_owner_provision, OwnerPreflightError
 from .owner_apply import apply_owner_account, OwnerApplyError
 import getpass
 from .configwright_live_status import migration_status, LiveStatusError
+from .history_init import initialize_history, HistoryInitError
 
 
 def parse_version(value: str | None) -> int | None:
@@ -110,6 +111,12 @@ def build_parser() -> argparse.ArgumentParser:
     live.add_argument("--database", required=True)
     live.add_argument("--login-user", required=True)
     live.add_argument("--secrets-file", help="Private CredentialWright env file if using a passwordRef")
+    history_init = sub.add_parser("configwright-history-init", help="Initialize empty MySQL migration history after explicit confirmation.")
+    history_init.add_argument("--source", required=True)
+    history_init.add_argument("--project-root", required=True)
+    history_init.add_argument("--database", required=True)
+    history_init.add_argument("--login-user", required=True, help="Dedicated migrator user (never application user or root)")
+    history_init.add_argument("--apply", action="store_true", help="Prompt for explicit authorization and create empty history")
     owner = sub.add_parser("configwright-owner-plan", help="Offline, non-executable plan for an owner-controlled database installation.")
     owner.add_argument("--source", required=True, help="Generated ConfigWright databases.json")
     owner.add_argument("--project-root", required=True)
@@ -238,6 +245,27 @@ def main(argv: list[str] | None = None) -> int:
         except (LiveStatusError, CredentialResolutionError, ValueError, KeyError, OSError,
                 json.JSONDecodeError, EOFError, KeyboardInterrupt):
             print('Live migration inspection failed; verify configuration, history access and credentials.', file=sys.stderr)
+            return 1
+
+    if command == "configwright-history-init":
+        try:
+            imported = import_configwright(args.source, root=args.project_root, database=args.database)
+            db = imported.databases[args.database]
+            if args.apply:
+                print(f"Review: create only schema_migrations in empty MySQL schema {db.settings.get('database')} using dedicated migrator {args.login_user}.")
+                print("Refuses nonempty schemas and existing history. No SQL migrations or user changes will run.")
+                if input(f"Type INITIALIZE {args.database} to authorize: ") != f"INITIALIZE {args.database}":
+                    print("Authorization declined; no changes executed.", file=sys.stderr)
+                    return 1
+            password = getpass.getpass("Migrator password (hidden): ")
+            result = initialize_history(db, username=args.login_user, password=password,
+                                        approved=args.apply, dry_run=not args.apply)
+            print(json.dumps({"database":result.database, "target":result.target,
+                              "schemaEmpty":result.schema_empty, "historyTableExists":result.history_exists,
+                              "action":result.action, "changesExecuted":result.changes_executed}, indent=2))
+            return 0
+        except (HistoryInitError, ValueError, KeyError, OSError, json.JSONDecodeError, EOFError, KeyboardInterrupt):
+            print("History initialization refused or failed; inspect target state and migrator authorization. No automatic rollback.",file=sys.stderr)
             return 1
 
     if command == "configwright-owner-plan":
