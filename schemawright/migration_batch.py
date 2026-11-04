@@ -63,7 +63,7 @@ def _guard_error_code(message: str) -> str:
         return 'history_invalid'
     if any(x in message.lower() for x in ('drift', 'target table', 'ordering gap', 'schema object')):
         return 'schema_drift'
-    return 'preflight_refused' 
+    return 'preflight_refused'
 
 
 def migrate_batch(db: DatabaseConfig, *, username: str, password: str,
