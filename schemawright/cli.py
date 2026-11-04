@@ -22,6 +22,7 @@ import getpass
 from .configwright_live_status import migration_status, LiveStatusError
 from .history_init import initialize_history, HistoryInitError
 from .migration_apply import migrate_one, MigrationApplyError
+from .recovery_inspect import inspect_recovery, RecoveryInspectError
 
 
 def parse_version(value: str | None) -> int | None:
@@ -112,6 +113,12 @@ def build_parser() -> argparse.ArgumentParser:
     live.add_argument("--database", required=True)
     live.add_argument("--login-user", required=True)
     live.add_argument("--secrets-file", help="Private CredentialWright env file if using a passwordRef")
+    recovery = sub.add_parser("configwright-recovery-inspect", help="Read-only inspection of possible interrupted CREATE TABLE migrations.")
+    recovery.add_argument("--source", required=True)
+    recovery.add_argument("--project-root", required=True)
+    recovery.add_argument("--database", required=True)
+    recovery.add_argument("--login-user", required=True, help="Read-only database account")
+    recovery.add_argument("--secrets-file", help="Private CredentialWright env file, if using passwordRef")
     history_init = sub.add_parser("configwright-history-init", help="Initialize empty MySQL migration history after explicit confirmation.")
     history_init.add_argument("--source", required=True)
     history_init.add_argument("--project-root", required=True)
@@ -252,6 +259,25 @@ def main(argv: list[str] | None = None) -> int:
         except (LiveStatusError, CredentialResolutionError, ValueError, KeyError, OSError,
                 json.JSONDecodeError, EOFError, KeyboardInterrupt):
             print('Live migration inspection failed; verify configuration, history access and credentials.', file=sys.stderr)
+            return 1
+
+    if command == "configwright-recovery-inspect":
+        try:
+            imported = import_configwright(args.source, root=args.project_root, database=args.database)
+            db = imported.databases[args.database]
+            if args.secrets_file:
+                refs = resolve_database_credentials(db, args.secrets_file)
+                password = refs.get('passwordRef')
+                if not password:
+                    raise RecoveryInspectError('Missing password reference')
+            else:
+                password = getpass.getpass('Inspection password (hidden): ')
+            result = inspect_recovery(db, username=args.login_user, password=password)
+            print(json.dumps(result, indent=2))
+            return 2 if not result['safeToProceed'] else 0
+        except (RecoveryInspectError, CredentialResolutionError, ValueError, KeyError, OSError,
+                json.JSONDecodeError, EOFError, KeyboardInterrupt):
+            print('Recovery inspection failed; verify configuration and read-only history access.', file=sys.stderr)
             return 1
 
     if command == "configwright-history-init":
