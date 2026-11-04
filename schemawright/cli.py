@@ -19,6 +19,7 @@ from .owner_inspect import inspect_owner_database, OwnerInspectError
 from .owner_preflight import preflight_owner_provision, OwnerPreflightError
 from .owner_apply import apply_owner_account, OwnerApplyError
 import getpass
+from .recovery_reconcile import reconcile_one, ReconcileError
 from .configwright_live_status import migration_status, LiveStatusError
 from .history_init import initialize_history, HistoryInitError
 from .migration_apply import migrate_one, MigrationApplyError
@@ -164,6 +165,13 @@ def build_parser() -> argparse.ArgumentParser:
     apply.add_argument("--secrets-output", required=True, help="New exclusive mode-0600 secret file path; must not exist")
     apply.add_argument("--account-host", default="127.0.0.1", choices=["127.0.0.1", "localhost", "::1"])
     apply.add_argument("--apply", action="store_true", help="Enable the owner-confirmation workflow; otherwise this command refuses writes")
+    rec = sub.add_parser("configwright-reconcile-one", help="Verify single-column MySQL table before missing-history reconciliation.")
+    rec.add_argument("--source", required=True)
+    rec.add_argument("--project-root", required=True)
+    rec.add_argument("--database", required=True)
+    rec.add_argument("--login-user", required=True, help="Dedicated migrator identity")
+    rec.add_argument("--file", required=True, help="Exact active migration SQL filename")
+    rec.add_argument("--apply", action="store_true", help="After verification, insert one missing history record")
     sub.add_parser("validate", help="Validate migration file naming and duplicate keys.")
     sub.add_parser("status", help="Show applied/pending active migrations.")
     mig = sub.add_parser("migrate", help="Apply active migrations and seeds.")
@@ -320,6 +328,26 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         except (MigrationApplyError, ValueError, KeyError, OSError, json.JSONDecodeError, EOFError, KeyboardInterrupt):
             print('Migration refused or failed. If --apply was used, inspect database schema and migration history before any retry.', file=sys.stderr)
+            return 1
+
+    if command == "configwright-reconcile-one":
+        try:
+            imported = import_configwright(args.source, root=args.project_root, database=args.database)
+            db = imported.databases[args.database]
+            if args.apply:
+                print(f"Review: insert ONLY one missing migration-history row in {db.settings.get('database')}; no DDL will execute.")
+                print("Only structurally verified, EMPTY single-column InnoDB tables qualify. No automatic retry.")
+                expected = f"RECONCILE {args.database} {args.file}"
+                if input(f'Type "{expected}" to authorize: ') != expected:
+                    print('Authorization declined; no changes executed.', file=sys.stderr)
+                    return 1
+            password = getpass.getpass('Migrator password (hidden): ')
+            result = reconcile_one(db, username=args.login_user, password=password,
+                                   filename=args.file, approved=args.apply, dry_run=not args.apply)
+            print(json.dumps(result, indent=2))
+            return 0
+        except (ReconcileError, ValueError, KeyError, OSError, json.JSONDecodeError, EOFError, KeyboardInterrupt):
+            print('Reconciliation refused or failed; inspect actual table and history before retrying.', file=sys.stderr)
             return 1
 
     if command == "configwright-owner-plan":
