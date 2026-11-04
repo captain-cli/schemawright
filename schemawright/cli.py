@@ -21,6 +21,7 @@ from .owner_apply import apply_owner_account, OwnerApplyError
 import getpass
 from .configwright_live_status import migration_status, LiveStatusError
 from .history_init import initialize_history, HistoryInitError
+from .migration_apply import migrate_one, MigrationApplyError
 
 
 def parse_version(value: str | None) -> int | None:
@@ -117,6 +118,12 @@ def build_parser() -> argparse.ArgumentParser:
     history_init.add_argument("--database", required=True)
     history_init.add_argument("--login-user", required=True, help="Dedicated migrator user (never application user or root)")
     history_init.add_argument("--apply", action="store_true", help="Prompt for explicit authorization and create empty history")
+    migrate_one_cmd = sub.add_parser("configwright-migrate-one", help="Plan or apply one safe CREATE TABLE migration (Phase 6B1).")
+    migrate_one_cmd.add_argument("--source", required=True)
+    migrate_one_cmd.add_argument("--project-root", required=True)
+    migrate_one_cmd.add_argument("--database", required=True)
+    migrate_one_cmd.add_argument("--login-user", required=True, help="Dedicated migrator account")
+    migrate_one_cmd.add_argument("--apply", action="store_true", help="Require typed approval before one migration")
     owner = sub.add_parser("configwright-owner-plan", help="Offline, non-executable plan for an owner-controlled database installation.")
     owner.add_argument("--source", required=True, help="Generated ConfigWright databases.json")
     owner.add_argument("--project-root", required=True)
@@ -254,7 +261,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.apply:
                 print(f"Review: create only schema_migrations in empty MySQL schema {db.settings.get('database')} using dedicated migrator {args.login_user}.")
                 print("Refuses nonempty schemas and existing history. No SQL migrations or user changes will run.")
-                if input(f"Type INITIALIZE {args.database} to authorize: ") != f"INITIALIZE {args.database}":
+                if input(f'Type "INITIALIZE {args.database}" to authorize: ') != f"INITIALIZE {args.database}":
                     print("Authorization declined; no changes executed.", file=sys.stderr)
                     return 1
             password = getpass.getpass("Migrator password (hidden): ")
@@ -266,6 +273,27 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         except (HistoryInitError, ValueError, KeyError, OSError, json.JSONDecodeError, EOFError, KeyboardInterrupt):
             print("History initialization refused or failed; inspect target state and migrator authorization. No automatic rollback.",file=sys.stderr)
+            return 1
+
+    if command == "configwright-migrate-one":
+        try:
+            imported = import_configwright(args.source, root=args.project_root, database=args.database)
+            db = imported.databases[args.database]
+            if args.apply:
+                target = db.settings.get('database')
+                print(f"Review: apply ONLY the next pending CREATE TABLE migration to {target} as {args.login_user}.")
+                print("MySQL DDL auto-commits. An interrupted migration may need manual recovery.")
+                expected = f"APPLY {args.database}"
+                if input(f'Type "{expected}" to authorize: ') != expected:
+                    print('Authorization declined; no changes executed.', file=sys.stderr)
+                    return 1
+            password = getpass.getpass('Migrator password (hidden): ')
+            result = migrate_one(db, username=args.login_user, password=password,
+                                 approved=args.apply, dry_run=not args.apply)
+            print(json.dumps(result, indent=2))
+            return 0
+        except (MigrationApplyError, ValueError, KeyError, OSError, json.JSONDecodeError, EOFError, KeyboardInterrupt):
+            print('Migration refused or failed. If --apply was used, inspect database schema and migration history before any retry.', file=sys.stderr)
             return 1
 
     if command == "configwright-owner-plan":
