@@ -11,8 +11,8 @@ from pathlib import Path
 import re
 from typing import Any
 
-CANONICAL = re.compile(r'^(?P<prefix>[VSRPT])(?P<version>\d{4})__(?P<order>\d{4})__(?P<desc>[a-z0-9_-]+)\.sql$')
-LEGACY = re.compile(r'^(?P<prefix>[VSRPT])(?P<number>\d{1,4})__(?P<desc>[a-z0-9_-]+)\.sql$', re.I)
+CANONICAL = re.compile(r'^(?P<prefix>[VSRPT])(?P<version>\d{4,6})__(?P<order>\d{4,6})__(?P<desc>[a-z0-9_-]+)\.sql$')
+LEGACY = re.compile(r'^(?P<prefix>[VSRPT])(?P<number>\d{1,6})__(?P<desc>[a-z0-9_-]+)\.sql$', re.I)
 COLLECTIONS = {'migrations': 'V', 'seeds': 'S', 'procedures': 'P', 'triggers': 'T', 'rollbacks': 'R'}
 ARCHIVES = {'archive', 'archives', 'archived'}
 
@@ -150,7 +150,7 @@ def scan_sql_tree(project_root: str | Path, *, sql_root: str | Path = 'sql') -> 
         elif legacy:
             original_sequence = int(legacy['number'])
             order = original_sequence * 10
-            if not 1 <= order <= 9999:
+            if not 1 <= order <= 999999:
                 issues.append({'code': 'legacy_order_out_of_range', 'file': relative})
                 continue
             version = 1

@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 
 MIGRATION_RE = re.compile(
-    r"^(?P<prefix>[VSRPT])(?P<version>\d{4})__(?P<order>\d{4})__(?P<description>[a-z0-9_\-]+)\.sql$"
+    r"^(?P<prefix>[VSRPT])(?P<version>\d{4,6})__(?P<order>\d{4,6})__(?P<description>[a-z0-9_\-]+)\.sql$"
 )
 
 TYPE_ALIASES = {
@@ -77,4 +77,6 @@ def parse_migration_filename(path: Path) -> MigrationFile | None:
 
 
 def format_migration_filename(prefix: str, version: int, install_order: int, description: str) -> str:
+    if prefix not in {"V", "S", "R", "P", "T"} or not isinstance(version, int) or isinstance(version, bool) or not isinstance(install_order, int) or isinstance(install_order, bool) or not 0 <= version <= 999999 or not 0 <= install_order <= 999999:
+        raise ValueError("Migration prefix, version or order is invalid (maximum six digits)")
     return f"{prefix}{version:04d}__{install_order:04d}__{slugify_description(description)}.sql"
