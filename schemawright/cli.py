@@ -13,6 +13,7 @@ from .validate import validate_database
 from .configwright_bridge import inspect_databases
 from .configwright_import import import_configwright
 from .configwright_plan import plan_database
+from .sql_intake import scan_sql_tree
 from .configwright_credentials import resolve_database_credentials, CredentialResolutionError
 from .deployment_preflight import deployment_preflight, DeploymentPreflightError, error_report
 from .owner_provision import plan_owner_provision, OwnerProvisionError
@@ -101,6 +102,11 @@ def build_parser() -> argparse.ArgumentParser:
     imported.add_argument("--source", required=True, help="ConfigWright schemawright/databases.json")
     imported.add_argument("--project-root", required=True, help="Root for migration file paths")
     imported.add_argument("--database", default=None, help="Select one database by identifier")
+    intake = sub.add_parser("configwright-sql-intake", help="Preview legacy SQL intake and naming; never modify files or database")
+    intake.add_argument("--project-root", required=True)
+    intake.add_argument("--sql-root", default="sql")
+    intake.add_argument("--dry-run", action="store_true", help="Explicit read-only intent; always enforced")
+    intake.add_argument("--json", action="store_true", help="Output machine-readable JSON (default)")
     planning = sub.add_parser("configwright-plan", help="Offline migration discovery and ordering; no database connections.")
     planning.add_argument("--source", required=True, help="ConfigWright schemawright/databases.json")
     planning.add_argument("--project-root", required=True, help="Root for migration file paths")
@@ -234,6 +240,18 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{db.name}: {db.driver} migrations={db.migrations.active} refs={','.join(refs) or 'none'}")
         print(f"Imported {len(imported_config.databases)} database definition(s) into SchemaWright model; no databases contacted.")
         return 0
+
+    if command == "configwright-sql-intake":
+        try:
+            report = scan_sql_tree(args.project_root, sql_root=args.sql_root)
+            print(json.dumps(report, indent=2))
+            return 0 if report['readyForConversion'] else 2
+        except (ValueError, OSError):
+            print(json.dumps({'contractVersion': '1.0', 'action': 'sql-intake-preview',
+                              'status': 'error', 'errorCode': 'intake_input_error',
+                              'readOnly': True, 'changesExecuted': False,
+                              'executionAuthorized': False, 'readyForConversion': False}, indent=2))
+            return 2
 
     if command == "configwright-plan":
         try:
