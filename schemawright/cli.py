@@ -326,8 +326,11 @@ def main(argv: list[str] | None = None) -> int:
                 print("MySQL DDL auto-commits. Batch stops at first failure; no rollback or automatic retry.")
                 expected = f"BATCH {args.database} {args.max_migrations}"
                 if input(f'Type "{expected}" to authorize: ') != expected:
-                    print('Authorization declined; no changes executed.', file=sys.stderr)
-                    return 1
+                    print(json.dumps({'action': 'stopped', 'errorCode': 'authorization_declined',
+                                      'stage': 'authorization', 'completed': [],
+                                      'changesExecuted': False, 'manualInspectionRequired': False,
+                                      'error': 'Operator declined batch authorization'}, indent=2), file=sys.stderr)
+                    return 2
             password = getpass.getpass('Migrator password (hidden): ')
             result = migrate_batch(db, username=args.login_user, password=password,
                                    approved=args.apply, dry_run=not args.apply,
@@ -338,8 +341,11 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(exc.as_result(), indent=2), file=sys.stderr)
             return 2
         except (ValueError, KeyError, OSError, json.JSONDecodeError, EOFError, KeyboardInterrupt):
-            print('Batch refused; verify configuration and database state before retrying.', file=sys.stderr)
-            return 1
+            print(json.dumps({'action': 'stopped', 'errorCode': 'configuration_or_input_error',
+                              'stage': 'configuration', 'completed': [],
+                              'changesExecuted': False, 'manualInspectionRequired': False,
+                              'error': 'Batch input or configuration rejected'}, indent=2), file=sys.stderr)
+            return 2
 
     if command == "configwright-migrate-one":
         try:
