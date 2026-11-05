@@ -14,6 +14,7 @@ from .configwright_bridge import inspect_databases
 from .configwright_import import import_configwright
 from .configwright_plan import plan_database
 from .configwright_credentials import resolve_database_credentials, CredentialResolutionError
+from .deployment_preflight import deployment_preflight, DeploymentPreflightError, error_report
 from .owner_provision import plan_owner_provision, OwnerProvisionError
 from .owner_inspect import inspect_owner_database, OwnerInspectError
 from .owner_preflight import preflight_owner_provision, OwnerPreflightError
@@ -109,6 +110,12 @@ def build_parser() -> argparse.ArgumentParser:
     credentials.add_argument("--project-root", required=True, help="Root for project paths")
     credentials.add_argument("--database", default=None, help="Select one database by identifier")
     credentials.add_argument("--secrets-file", required=True, help="CredentialWright-managed env file (never pass secret values)")
+    captain_preflight = sub.add_parser("captain-deployment-preflight", help="Read-only ConfigWright/CredentialWright/SchemaWright deployment readiness report.")
+    captain_preflight.add_argument("--source", required=True)
+    captain_preflight.add_argument("--project-root", required=True)
+    captain_preflight.add_argument("--database", required=True)
+    captain_preflight.add_argument("--read-only-user", required=True, help="Application inspection identity; never migrator or root")
+    captain_preflight.add_argument("--secrets-file", required=True, help="Private CredentialWright-managed env file")
     live = sub.add_parser("configwright-live-status", help="Inspect existing MySQL migration history without writes.")
     live.add_argument("--source", required=True)
     live.add_argument("--project-root", required=True)
@@ -257,6 +264,23 @@ def main(argv: list[str] | None = None) -> int:
             # Do not include exception text from outside the guarded resolver.
             print("Credential verification failed; check database references and managed secret keys.", file=sys.stderr)
             return 1
+
+    if command == "captain-deployment-preflight":
+        try:
+            report = deployment_preflight(
+                source=args.source, project_root=args.project_root,
+                database=args.database, read_only_user=args.read_only_user,
+                secrets_file=args.secrets_file)
+            print(json.dumps(report, indent=2))
+            return 0 if report['readyToDeploy'] else 2
+        except DeploymentPreflightError as exc:
+            print(json.dumps(error_report(exc), indent=2))
+            return 2
+        except (KeyboardInterrupt, EOFError):
+            print(json.dumps({'status': 'error', 'errorCode': 'cancelled',
+                              'readyToDeploy': False, 'changesExecuted': False,
+                              'executionAuthorized': False}, indent=2))
+            return 2
 
     if command == "configwright-live-status":
         try:
